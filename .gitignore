@@ -1,0 +1,6 @@
+*.log
+*.md
+*.state
+*.txt
+__pycache__
+plans
