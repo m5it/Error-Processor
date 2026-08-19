@@ -18,20 +18,33 @@ from pathlib import Path
 LOG_START_RE = re.compile(r"^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}")
 
 # Normalization patterns (applied in order)
+# Masks variable parts of nginx error log lines so similar entries group together.
+# Note: entries with and without an optional trailing field such as "referrer: ..."
+# are intentionally distinct normalization groups unless that field is masked.
 NORMALIZATION_PATTERNS = [
-    (re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b"), "<IP>"),
-    (re.compile(r"\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}"), "<DATE>"),
-    (re.compile(r"\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}"), "<DATE>"),
+    # Timestamp at the start of a line: 2026/08/18 11:41:22
+    (re.compile(r"^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}"), "<DATE>"),
+    # PID/worker id: 12345#123
     (re.compile(r"\b\d+#\d+\b"), "<PID>"),
+    # Request id: *12345
     (re.compile(r"\*\d+\b"), "<REQ>"),
+    # Client IP address
+    (re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b"), "<IP>"),
+    # Quoted request line (mask entire quoted value before path substitution)
+    (re.compile(r"request:\s*\"[^\"]*\""), "request: \"<REQUEST>\""),
+    # Quoted upstream peer
+    (re.compile(r"upstream:\s*\"[^\"]*\""), "upstream: \"<UPSTREAM>\""),
+    # Optional referrer field — strip it so lines with/without referrer group together
+    (re.compile(r",?\s*referrer:\s*\"[^\"]*\""), ""),
+    # server host (may appear unquoted or quoted); stop at comma or end
+    (re.compile(r"server:\s*\"?[^\",]+"), "server: <HOST>"),
+    # host header
+    (re.compile(r"host:\s*\"?[^\"]*\"?"), "host: <HOST>"),
+    # PHP source paths and line numbers
     (re.compile(r"on line \d+"), "<LINE>"),
     (re.compile(r"in /[^\s]*\.php"), "in <PATH>"),
-    (re.compile(r"server: [^,]+"), "server: <HOST>"),
-    (re.compile(r"host: \"[^\"]+\""), "host: \"<HOST>\""),
-    (re.compile(r"referrer: \"[^\"]+\""), "referrer: \"<REF>\""),
-    (re.compile(r"request: \"[^\"]+\""), "request: \"<REQUEST>\""),
-    (re.compile(r"upstream: \"[^\"]+\""), "upstream: \"<UPSTREAM>\""),
-    (re.compile(r"client: <IP>"), "client: <IP>"),
+    # Generic file paths with line numbers, e.g. /path/to/file.php(123)
+    (re.compile(r"/[^\s:]+(?::\d+)?"), "<PATH>"),
 ]
 
 
