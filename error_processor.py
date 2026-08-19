@@ -1,161 +1,168 @@
 #!/usr/bin/env python3
-"""
-error_processor.py
+"""error_processor.py - CLI tool for processing nginx/error logs.
 
-Process an error log file with optional sorting, unique filtering, frequency counting, and regex search.
-
-Usage:
-    ./error_processor.py <log_file_path> [--sort] [--unique] [--count] [--top N] [--search PATTERN]
-    ./error_processor.py -h | --help
-
-Arguments:
-    log_file_path    Path to the error log file to process.
-    --sort, -s       Sort the output lines alphabetically.
-    --unique, -u     Remove duplicate lines from the output.
-    --count, -c      Count occurrences of each unique line (sorted by count descending).
-    --top N, -t N    Show only the top N most frequent entries (requires --count).
-    --search, -e P   Only include lines matching the regular expression P.
+Supports sorting, deduplication, frequency counting, top-N output,
+regex-based filtering, and grouping of multi-line log entries.
 """
 
 import argparse
+import collections
 import re
 import sys
-from collections import Counter
+from pathlib import Path
 
-def parse_arguments():
+
+# Nginx error lines start with a timestamp like "2026/08/18 11:41:22 [error] ..."
+LOG_START_RE = re.compile(r"^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}")
+
+
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Process an error log file with optional sorting, unique filtering, frequency counting, and regex search.",
-        epilog="Examples:\n"
-        "  ./error_processor.py error.log --sort --unique\n"
-        "  ./error_processor.py error.log --count --top 20\n"
-        "  ./error_processor.py error.log --search 'ERROR|WARN' --count --top 10",
+        description="Process log files: sort, deduplicate, count, search."
+    )
+    parser.add_argument("log_file_path", help="Path to the log file to process")
+    parser.add_argument(
+        "-s", "--sort", action="store_true", help="Sort output alphabetically"
     )
     parser.add_argument(
-        "log_file_path",
-        nargs="?",
-        help="Path to the error log file to process.",
+        "-u", "--unique", action="store_true", help="Remove duplicate entries"
     )
     parser.add_argument(
-        "--sort",
-        "-s",
-        action="store_true",
-        help="Sort the output lines alphabetically.",
+        "-c", "--count", action="store_true", help="Count occurrences of each entry"
     )
     parser.add_argument(
-        "--unique",
-        "-u",
-        action="store_true",
-        help="Remove duplicate lines from the output.",
-    )
-    parser.add_argument(
-        "--count",
-        "-c",
-        action="store_true",
-        help="Count occurrences of each unique line and print results sorted by count descending.",
-    )
-    parser.add_argument(
-        "--top",
         "-t",
+        "--top",
         type=int,
         metavar="N",
-        help="When used with --count, show only the top N most frequent lines (N >= 0).",
+        help="When using --count, show only the top N most frequent entries",
     )
     parser.add_argument(
-        "--search",
         "-e",
+        "--search",
         metavar="PATTERN",
-        help="Only include lines matching the given regular expression.",
+        help="Filter entries by regex pattern (case-sensitive by default)",
     )
-    args = parser.parse_args()
+    return parser.parse_args(argv)
 
-    if args.log_file_path is None:
-        parser.print_help()
+
+def compile_search(pattern):
+    """Compile a regex pattern, raising a clean error on invalid input."""
+    try:
+        return re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(f"Invalid regex pattern: {exc}") from exc
+
+
+def read_entries(path):
+    """Read a text file and yield multi-line log entries as single strings."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            buffer = []
+            for raw in fh:
+                # Remove line ending characters and embedded carriage returns.
+                line = raw.rstrip("\n\r").replace("\r", "")
+                if not line:
+                    continue
+                if LOG_START_RE.match(line):
+                    if buffer:
+                        yield "\n".join(buffer)
+                    buffer = [line]
+                else:
+                    buffer.append(line)
+            if buffer:
+                yield "\n".join(buffer)
+    except FileNotFoundError:
+        print(f"Error: file not found: {path}", file=sys.stderr)
+        sys.exit(1)
+    except PermissionError:
+        print(f"Error: permission denied: {path}", file=sys.stderr)
+        sys.exit(1)
+    except OSError as exc:
+        print(f"Error reading {path}: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    return args
+
+def process_log(log_file_path, sort=False, unique=False, count=False, top=None, search=None):
+    """Process a log file according to the requested options."""
+    compiled = None
+    if search is not None:
+        compiled = compile_search(search)
+
+    entries = read_entries(log_file_path)
+
+    if compiled is not None:
+        entries = (entry for entry in entries if compiled.search(entry))
+
+    if sort:
+        entries = sorted(entries)
+
+    if unique:
+        if sort:
+            # sorted output: use itertools-like dedup for efficiency
+            def dedup_sorted(seq):
+                prev = object()
+                for item in seq:
+                    if item != prev:
+                        yield item
+                        prev = item
+            entries = list(dedup_sorted(entries))
+        else:
+            entries = list(dict.fromkeys(entries))
+
+    if count:
+        counter = collections.Counter(entries)
+        # Sort by count descending, then alphabetically for stable tie-breaking
+        counted = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
+        if top is not None:
+            if top < 0:
+                print("Warning: --top value must be non-negative; ignoring", file=sys.stderr)
+                top = None
+            else:
+                counted = counted[:top]
+        return counted
+
+    if top is not None and not count:
+        print(
+            "Warning: --top is only meaningful with --count; ignoring --top",
+            file=sys.stderr,
+        )
+
+    return list(entries)
 
 
-def count_lines(lines):
-    """Return (line, count) pairs sorted by count descending, then alphabetically."""
-    counter = Counter(lines)
-    return sorted(counter.items(), key=lambda item: (-item[1], item[0]))
+def format_counted(items):
+    """Format counted entries with right-aligned counts in an 8-char field."""
+    formatted = []
+    for entry, count in items:
+        lines = entry.split("\n")
+        formatted.append(f"{count:>8}    {lines[0]}")
+        for continuation in lines[1:]:
+            formatted.append(f"{'':>8}    {continuation}")
+    return formatted
 
 
-def process_log(
-    log_file_path,
-    sort_output=False,
-    unique_output=False,
-    count_output=False,
-    search_pattern=None,
-):
-    try:
-        with open(log_file_path, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-    except FileNotFoundError:
-        print(f"Error: File not found: {log_file_path}", file=sys.stderr)
-        sys.exit(2)
-    except PermissionError:
-        print(f"Error: Permission denied: {log_file_path}", file=sys.stderr)
-        sys.exit(3)
-    except Exception as e:
-        print(f"Error reading file {log_file_path}: {e}", file=sys.stderr)
-        sys.exit(4)
+def main(argv=None):
+    args = parse_args(argv)
 
-    if search_pattern is not None:
-        try:
-            compiled_pattern = re.compile(search_pattern)
-        except re.error as e:
-            print(f"Error: Invalid regular expression: {search_pattern!r} ({e})", file=sys.stderr)
-            sys.exit(5)
-        lines = [line for line in lines if compiled_pattern.search(line)]
-
-    if sort_output:
-        lines.sort()
-
-    if unique_output:
-        seen = set()
-        unique_lines = []
-        for line in lines:
-            if line not in seen:
-                seen.add(line)
-                unique_lines.append(line)
-        lines = unique_lines
-
-    if count_output:
-        return count_lines(lines)
-
-    return lines
-
-
-def main():
-    args = parse_arguments()
     result = process_log(
         args.log_file_path,
-        sort_output=args.sort,
-        unique_output=args.unique,
-        count_output=args.count,
-        search_pattern=args.search,
+        sort=args.sort,
+        unique=args.unique,
+        count=args.count,
+        top=args.top,
+        search=args.search,
     )
-    try:
-        if args.count:
-            top_n = args.top
-            if top_n is not None and top_n < 0:
-                top_n = 0
-            if top_n is not None:
-                result = result[:top_n]
-            for line, count in result:
-                sys.stdout.write(f"{count:>8}  {line}")
-        else:
-            if args.top is not None:
-                print("Warning: --top is ignored unless --count is used.", file=sys.stderr)
-            sys.stdout.writelines(result)
-    except BrokenPipeError:
-        # Handle early pipe close gracefully (e.g., piped to `head`)
-        try:
-            sys.stdout.close()
-        except BrokenPipeError:
-            pass
-        sys.exit(0)
+
+    if not result:
+        return
+
+    if args.count:
+        output = format_counted(result)
+    else:
+        output = result
+
+    print("\n".join(output))
 
 
 if __name__ == "__main__":
