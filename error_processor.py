@@ -2,10 +2,10 @@
 """
 error_processor.py
 
-Process an error log file with optional sorting, unique filtering, and frequency counting.
+Process an error log file with optional sorting, unique filtering, frequency counting, and regex search.
 
 Usage:
-    ./error_processor.py <log_file_path> [--sort] [--unique] [--count] [--top N]
+    ./error_processor.py <log_file_path> [--sort] [--unique] [--count] [--top N] [--search PATTERN]
     ./error_processor.py -h | --help
 
 Arguments:
@@ -14,17 +14,21 @@ Arguments:
     --unique, -u     Remove duplicate lines from the output.
     --count, -c      Count occurrences of each unique line (sorted by count descending).
     --top N, -t N    Show only the top N most frequent entries (requires --count).
+    --search, -e P   Only include lines matching the regular expression P.
 """
 
 import argparse
+import re
 import sys
 from collections import Counter
 
-
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Process an error log file with optional sorting, unique filtering, and frequency counting.",
-        epilog="Examples:\n  ./error_processor.py error.log --sort --unique\n  ./error_processor.py error.log --count --top 20",
+        description="Process an error log file with optional sorting, unique filtering, frequency counting, and regex search.",
+        epilog="Examples:\n"
+        "  ./error_processor.py error.log --sort --unique\n"
+        "  ./error_processor.py error.log --count --top 20\n"
+        "  ./error_processor.py error.log --search 'ERROR|WARN' --count --top 10",
     )
     parser.add_argument(
         "log_file_path",
@@ -56,7 +60,12 @@ def parse_arguments():
         metavar="N",
         help="When used with --count, show only the top N most frequent lines (N >= 0).",
     )
-
+    parser.add_argument(
+        "--search",
+        "-e",
+        metavar="PATTERN",
+        help="Only include lines matching the given regular expression.",
+    )
     args = parser.parse_args()
 
     if args.log_file_path is None:
@@ -72,7 +81,13 @@ def count_lines(lines):
     return sorted(counter.items(), key=lambda item: (-item[1], item[0]))
 
 
-def process_log(log_file_path, sort_output=False, unique_output=False, count_output=False):
+def process_log(
+    log_file_path,
+    sort_output=False,
+    unique_output=False,
+    count_output=False,
+    search_pattern=None,
+):
     try:
         with open(log_file_path, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
@@ -85,6 +100,14 @@ def process_log(log_file_path, sort_output=False, unique_output=False, count_out
     except Exception as e:
         print(f"Error reading file {log_file_path}: {e}", file=sys.stderr)
         sys.exit(4)
+
+    if search_pattern is not None:
+        try:
+            compiled_pattern = re.compile(search_pattern)
+        except re.error as e:
+            print(f"Error: Invalid regular expression: {search_pattern!r} ({e})", file=sys.stderr)
+            sys.exit(5)
+        lines = [line for line in lines if compiled_pattern.search(line)]
 
     if sort_output:
         lines.sort()
@@ -111,6 +134,7 @@ def main():
         sort_output=args.sort,
         unique_output=args.unique,
         count_output=args.count,
+        search_pattern=args.search,
     )
     try:
         if args.count:
