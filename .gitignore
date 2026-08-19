@@ -1,6 +1,7 @@
 *.md
 !README.md
 *.log
+*.log.1
 *.state
 *.txt
 __pycache__
