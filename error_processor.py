@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """error_processor.py - CLI tool for processing nginx/error logs.
 
-Supports sorting, deduplication, frequency counting, top-N output,
+Supports sorting, deduplication, frequency counting, top-N and bottom-N output,
 regex-based filtering, and grouping of multi-line log entries.
 """
 
@@ -30,12 +30,20 @@ def parse_args(argv=None):
     parser.add_argument(
         "-c", "--count", action="store_true", help="Count occurrences of each entry"
     )
-    parser.add_argument(
+    limit_group = parser.add_mutually_exclusive_group()
+    limit_group.add_argument(
         "-t",
         "--top",
         type=int,
         metavar="N",
         help="When using --count, show only the top N most frequent entries",
+    )
+    limit_group.add_argument(
+        "-b",
+        "--bottom",
+        type=int,
+        metavar="N",
+        help="When using --count, show only the bottom N least frequent entries",
     )
     parser.add_argument(
         "-e",
@@ -83,7 +91,15 @@ def read_entries(path):
         sys.exit(1)
 
 
-def process_log(log_file_path, sort=False, unique=False, count=False, top=None, search=None):
+def process_log(
+    log_file_path,
+    sort=False,
+    unique=False,
+    count=False,
+    top=None,
+    bottom=None,
+    search=None,
+):
     """Process a log file according to the requested options."""
     compiled = None
     if search is not None:
@@ -112,19 +128,27 @@ def process_log(log_file_path, sort=False, unique=False, count=False, top=None, 
 
     if count:
         counter = collections.Counter(entries)
-        # Sort by count descending, then alphabetically for stable tie-breaking
-        counted = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
-        if top is not None:
-            if top < 0:
-                print("Warning: --top value must be non-negative; ignoring", file=sys.stderr)
-                top = None
+        if bottom is not None:
+            # Sort by count ascending, then alphabetically for stable tie-breaking
+            counted = sorted(counter.items(), key=lambda kv: (kv[1], kv[0]))
+            if bottom < 0:
+                print("Warning: --bottom value must be non-negative; ignoring", file=sys.stderr)
             else:
-                counted = counted[:top]
+                counted = counted[:bottom]
+        else:
+            # Sort by count descending, then alphabetically for stable tie-breaking
+            counted = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
+            if top is not None:
+                if top < 0:
+                    print("Warning: --top value must be non-negative; ignoring", file=sys.stderr)
+                    top = None
+                else:
+                    counted = counted[:top]
         return counted
 
-    if top is not None and not count:
+    if top is not None or bottom is not None:
         print(
-            "Warning: --top is only meaningful with --count; ignoring --top",
+            "Warning: --top/--bottom are only meaningful with --count; ignoring limit",
             file=sys.stderr,
         )
 
@@ -151,6 +175,7 @@ def main(argv=None):
         unique=args.unique,
         count=args.count,
         top=args.top,
+        bottom=args.bottom,
         search=args.search,
     )
 
